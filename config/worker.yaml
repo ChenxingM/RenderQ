@@ -1,0 +1,37 @@
+# RenderQ Worker 配置
+
+# 服务器地址
+server_url: "http://localhost:8000"
+
+# Worker标识 (留空自动生成UUID)
+# worker_id: ""
+
+# Worker名称 (留空使用主机名)
+# name: "RenderNode-01"
+
+# Worker池 (用于任务路由)
+pools:
+  - "default"
+
+# 支持的插件类型
+capabilities:
+  - "aftereffects"
+  # - "blender"
+  # - "max"
+
+# 心跳间隔 (秒)
+heartbeat_interval: 10
+
+# 任务轮询间隔 (秒)
+poll_interval: 2
+
+# 日志目录
+log_dir: "logs"
+
+# After Effects 配置
+aftereffects:
+  # aerender路径 (留空自动检测)
+  # aerender_path: "C:\\Program Files\\Adobe\\Adobe After Effects 2024\\Support Files\\aerender.exe"
+  
+  # 内存限制 (%)
+  memory_limit: 100
