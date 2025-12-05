@@ -55,10 +55,10 @@ all = [
 ]
 
 [project.scripts]
-renderq = "cli.renderq:main"
-renderq-server = "server.main:main"
-renderq-worker = "worker.agent:main"
-renderq-gui = "gui.main:main"
+renderq = "src.client.cli.renderq:main"
+renderq-server = "src.server.main:main"
+renderq-worker = "src.worker.agent:main"
+renderq-gui = "src.client.gui.main:main"
 
 [project.urls]
 Homepage = "https://github.com/yourusername/renderq"
@@ -66,7 +66,7 @@ Repository = "https://github.com/yourusername/renderq"
 Issues = "https://github.com/yourusername/renderq/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["core", "server", "worker", "plugins", "gui", "cli"]
+packages = ["src"]
 
 [tool.black]
 line-length = 100

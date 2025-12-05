@@ -3,10 +3,10 @@ RenderQ GUI - Worker表格组件
 """
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
-    QHeaderView, QProgressBar, QAbstractItemView
+    QHeaderView, QProgressBar, QAbstractItemView, QMenu
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, Signal, QEvent
+from PySide6.QtGui import QColor, QAction, QCursor
 
 
 STATUS_COLORS = {
@@ -35,12 +35,13 @@ def format_bytes(size: int) -> str:
 
 class WorkerTableWidget(QWidget):
     """Worker表格"""
-    
+
     worker_selected = Signal(dict)
-    
+    worker_action = Signal(str, dict)  # action_name, worker
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         self.workers = []
         self._setup_ui()
     
@@ -78,11 +79,65 @@ class WorkerTableWidget(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setAlternatingRowColors(True)
-        
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+
+        # Context menu
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+
+        # Click on empty space to deselect
+        self.table.viewport().installEventFilter(self)
+
         # 信号
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
-        
+
         layout.addWidget(self.table)
+
+    def eventFilter(self, obj, event):
+        """Handle clicks on empty area to deselect"""
+        if obj == self.table.viewport() and event.type() == QEvent.MouseButtonPress:
+            index = self.table.indexAt(event.pos())
+            if not index.isValid():
+                self.table.clearSelection()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _show_context_menu(self, pos):
+        """Show context menu for worker"""
+        index = self.table.indexAt(pos)
+        if not index.isValid():
+            return
+
+        worker = self.workers[index.row()]
+        status = worker.get("status", "offline")
+
+        menu = QMenu(self)
+
+        # Connect to Worker Log
+        connect_log_action = QAction("Connect to Log", self)
+        connect_log_action.triggered.connect(lambda: self.worker_action.emit("connect_log", worker))
+        menu.addAction(connect_log_action)
+
+        menu.addSeparator()
+
+        # Enable/Disable
+        if status == "disabled":
+            enable_action = QAction("Enable Worker", self)
+            enable_action.triggered.connect(lambda: self.worker_action.emit("enable", worker))
+            menu.addAction(enable_action)
+        elif status in ("idle", "busy"):
+            disable_action = QAction("Disable Worker", self)
+            disable_action.triggered.connect(lambda: self.worker_action.emit("disable", worker))
+            menu.addAction(disable_action)
+
+        # Delete offline worker
+        if status == "offline":
+            delete_action = QAction("Delete Worker", self)
+            delete_action.triggered.connect(lambda: self.worker_action.emit("delete", worker))
+            menu.addAction(delete_action)
+
+        menu.exec_(QCursor.pos())
     
     def set_workers(self, workers: list):
         """设置Worker列表"""

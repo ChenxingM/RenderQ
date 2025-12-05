@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QProgressBar, QAbstractItemView
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QEvent
 from PySide6.QtGui import QColor
 
 
@@ -75,11 +75,26 @@ class JobTableWidget(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setAlternatingRowColors(True)
-        
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+
+        # Click on empty space to deselect
+        self.table.viewport().installEventFilter(self)
+
         # 信号
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
-        
+
         layout.addWidget(self.table)
+
+    def eventFilter(self, obj, event):
+        """Handle clicks on empty area to deselect"""
+        if obj == self.table.viewport() and event.type() == QEvent.MouseButtonPress:
+            index = self.table.indexAt(event.pos())
+            if not index.isValid():
+                self.table.clearSelection()
+                self.job_selected.emit({})
+                return True
+        return super().eventFilter(obj, event)
     
     def set_jobs(self, jobs: list):
         """设置作业列表"""

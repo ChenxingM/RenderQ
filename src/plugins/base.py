@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 import re
 
-from core.models import Job, Task
+from src.core.models import Job, Task
 
 
 class RenderPlugin(ABC):

@@ -12,7 +12,7 @@ from .database import Database
 from .events import event_bus, Event, EventType
 
 if TYPE_CHECKING:
-    from plugins.base import RenderPlugin
+    from src.plugins.base import RenderPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +39,19 @@ class Scheduler:
         """启动调度器"""
         self.running = True
         logger.info("Scheduler started")
-        
+
         while self.running:
             try:
-                await self._schedule_pending_jobs()
-                await self._assign_tasks()
+                # NOTE: _schedule_pending_jobs() 和 _assign_tasks() 已禁用
+                # 因为 submit_job 已经创建 Tasks，Worker 的 request-task 处理分配
+                # 这两个函数与 Worker 的拉取机制冲突，导致任务卡在 "assigned" 状态
+                # await self._schedule_pending_jobs()
+                # await self._assign_tasks()
                 await self._check_worker_timeouts()
                 await self._update_job_progress()
             except Exception as e:
                 logger.error(f"Scheduler error: {e}")
-            
+
             await asyncio.sleep(self.poll_interval)
     
     def stop(self):
@@ -238,6 +241,10 @@ class Scheduler:
                     job.status = JobStatus.COMPLETED
                     job.finished_at = datetime.now()
                     logger.info(f"Job {job.id} completed")
+
+                    # 创建后续编码任务
+                    await self._create_follow_up_jobs(job)
+
                     await event_bus.emit_async(Event(EventType.JOB_COMPLETED, {"job_id": job.id}))
                 elif failed >= total or failed > self.max_task_retries:
                     job.status = JobStatus.FAILED
@@ -250,7 +257,41 @@ class Scheduler:
                     }))
             
             self.db.update_job(job)
-    
+
+    async def _create_follow_up_jobs(self, job: Job):
+        """创建后续任务 (如编码任务)"""
+        plugin = self.plugins.get(job.plugin)
+        if not plugin:
+            return
+
+        # 检查插件是否有 get_encoding_jobs 方法
+        if not hasattr(plugin, 'get_encoding_jobs'):
+            return
+
+        try:
+            encoding_jobs = plugin.get_encoding_jobs(job)
+            for job_data in encoding_jobs:
+                from datetime import datetime
+                import uuid
+
+                new_job = Job(
+                    id=str(uuid.uuid4()),
+                    name=job_data.get("name", f"{job.name} - Encode"),
+                    plugin=job_data.get("plugin", "ffmpeg"),
+                    priority=job_data.get("priority", job.priority),
+                    pool=job_data.get("pool", job.pool),
+                    plugin_data=job_data.get("plugin_data", {}),
+                    dependent_on=job_data.get("dependent_on", []),
+                    metadata=job_data.get("metadata", {}),
+                    submitted_at=datetime.now(),
+                )
+
+                self.db.add_job(new_job)
+                logger.info(f"Created follow-up job: {new_job.name} (depends on {job.id})")
+
+        except Exception as e:
+            logger.error(f"Failed to create follow-up jobs for {job.id}: {e}")
+
     # ============ 手动操作 ============
     
     async def suspend_job(self, job_id: str):

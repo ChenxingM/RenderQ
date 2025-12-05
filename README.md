@@ -51,26 +51,26 @@ pip install -e ".[all]"
 
 ```bash
 # 方式1: 直接运行
-python -m server.main
+python -m src.server.main
 
 # 方式2: 使用uvicorn
-uvicorn server.main:app --host 0.0.0.0 --port 8000
+uvicorn src.server.main:app --host 0.0.0.0 --port 8000
 ```
 
 ### 启动Worker (渲染机)
 
 ```bash
 # 基本启动
-python -m worker.agent --server http://localhost:8000
+python -m src.worker.agent --server http://localhost:8000
 
 # 指定配置
-python -m worker.agent -c config/worker.yaml
+python -m src.worker.agent -c config/worker.yaml
 ```
 
 ### 启动GUI (作业机)
 
 ```bash
-python -m gui.main
+python -m src.client.gui.main
 ```
 
 ### 使用CLI
@@ -97,25 +97,27 @@ renderq cancel <job_id>
 
 ```
 renderq/
-├── core/                    # 核心库
-│   ├── models.py           # 数据模型
-│   ├── database.py         # 数据库操作
-│   ├── scheduler.py        # 任务调度器
-│   └── events.py           # 事件系统
-├── server/                  # API服务器
-│   └── main.py             # FastAPI应用
-├── worker/                  # Worker代理
-│   └── agent.py            # 执行代理
-├── plugins/                 # 渲染插件
-│   ├── base.py             # 插件基类
-│   ├── aftereffects.py     # AE插件
-│   └── registry.py         # 插件注册
-├── gui/                     # PySide6 GUI
-│   ├── main.py             # GUI入口
-│   ├── main_window.py      # 主窗口
-│   └── widgets/            # UI组件
-├── cli/                     # 命令行工具
-│   └── renderq.py          # CLI入口
+├── src/                     # 源代码
+│   ├── core/               # 核心库
+│   │   ├── models.py       # 数据模型
+│   │   ├── database.py     # 数据库操作
+│   │   ├── scheduler.py    # 任务调度器
+│   │   └── events.py       # 事件系统
+│   ├── plugins/            # 渲染插件
+│   │   ├── base.py         # 插件基类
+│   │   ├── aftereffects.py # AE插件
+│   │   └── registry.py     # 插件注册
+│   ├── server/             # API服务器
+│   │   └── main.py         # FastAPI应用
+│   ├── worker/             # Worker代理
+│   │   └── agent.py        # 执行代理
+│   └── client/             # 客户端
+│       ├── gui/            # PySide6 GUI
+│       │   ├── main.py
+│       │   ├── main_window.py
+│       │   └── widgets/
+│       └── cli/            # 命令行工具
+│           └── renderq.py
 └── config/                  # 配置文件
     ├── server.yaml
     └── worker.yaml
@@ -170,8 +172,8 @@ renderq/
 ## 开发插件
 
 ```python
-from plugins.base import CommandLinePlugin
-from core.models import Job, Task
+from src.plugins.base import CommandLinePlugin
+from src.core.models import Job, Task
 
 class MyPlugin(CommandLinePlugin):
     name = "myplugin"

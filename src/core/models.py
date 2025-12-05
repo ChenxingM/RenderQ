@@ -91,23 +91,26 @@ class Task(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     job_id: str
     index: int = 0                           # 任务序号
-    
+
     status: TaskStatus = TaskStatus.PENDING
     progress: float = 0.0
-    
+
     # 由插件生成的执行命令
     command: list[str] = Field(default_factory=list)
     working_dir: str | None = None
     environment: dict[str, str] = Field(default_factory=dict)
-    
+
     # 帧范围 (可选)
     frame_start: int | None = None
     frame_end: int | None = None
-    
+
+    # 插件自定义元数据
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
     assigned_worker: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
-    
+
     exit_code: int | None = None
     error_message: str | None = None
     log_path: str | None = None

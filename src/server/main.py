@@ -3,15 +3,17 @@ RenderQ Server - FastAPI 服务器
 """
 import asyncio
 import logging
+import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from core import Database, Scheduler, Job, JobSubmission, JobStatus, TaskStatus, WorkerStatus
-from core.events import event_bus, Event
-from plugins import registry
+from src.core import Database, Scheduler, Job, Task, JobSubmission, JobStatus, TaskStatus, WorkerStatus
+from src.core.events import event_bus, Event
+from src.plugins import registry
 
 # 配置日志
 logging.basicConfig(
@@ -115,7 +117,12 @@ async def submit_job(submission: JobSubmission):
     plugin = registry.get(submission.plugin)
     if not plugin:
         raise HTTPException(400, f"Unknown plugin: {submission.plugin}")
-    
+
+    # 验证插件参数
+    valid, error = plugin.validate(submission.plugin_data)
+    if not valid:
+        raise HTTPException(400, f"Plugin validation failed: {error}")
+
     # 创建Job
     job = Job(
         name=submission.name,
@@ -127,10 +134,31 @@ async def submit_job(submission: JobSubmission):
         metadata=submission.metadata,
         submitted_at=datetime.now(),
     )
-    
+
     db.add_job(job)
-    logger.info(f"Job submitted: {job.id} ({job.name})")
-    
+
+    # 使用插件创建Tasks (不构建命令，命令由Worker构建)
+    try:
+        tasks = plugin.create_tasks(job)
+        logger.info(f"Created {len(tasks)} tasks for job {job.id}")
+
+        for task in tasks:
+            # 不在Server构建命令，由Worker根据本地环境构建
+            db.add_task(task)
+
+        job.task_total = len(tasks)
+        job.status = JobStatus.QUEUED  # 设置为已排队状态，等待Worker执行
+        db.update_job(job)
+
+        logger.info(f"Job submitted: {job.id} ({job.name}) with {len(tasks)} tasks")
+    except Exception as e:
+        # 如果创建任务失败，删除Job
+        db.delete_job(job.id)
+        logger.error(f"Failed to create tasks: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Failed to create tasks: {e}")
+
     return job
 
 
@@ -240,19 +268,38 @@ async def task_progress(task_id: str, progress: float):
     return {"ok": True}
 
 
+@app.post("/api/tasks/{task_id}/log", tags=["Tasks"])
+async def upload_task_log(task_id: str, data: dict):
+    """Worker上传Task日志"""
+    from pathlib import Path
+
+    log_dir = Path("data/logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = log_dir / f"{task_id}.log"
+    log_content = data.get("log", "")
+
+    # 追加或覆盖日志
+    mode = "a" if data.get("append", False) else "w"
+    with open(log_path, mode, encoding="utf-8") as f:
+        f.write(log_content)
+
+    return {"ok": True}
+
+
 @app.post("/api/tasks/{task_id}/complete", tags=["Tasks"])
 async def task_completed(task_id: str, exit_code: int = 0):
     """Worker报告Task完成"""
     task = db.get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    
+
     db.update_task_status(
         task_id, TaskStatus.COMPLETED,
         finished_at=datetime.now(),
         exit_code=exit_code
     )
-    
+
     # 释放Worker
     if task.assigned_worker:
         worker = db.get_worker(task.assigned_worker)
@@ -260,8 +307,70 @@ async def task_completed(task_id: str, exit_code: int = 0):
             worker.status = WorkerStatus.IDLE
             worker.current_task = None
             db.update_worker(worker)
-    
+
+    # 更新Job状态
+    job = db.get_job(task.job_id)
+    if job:
+        all_tasks = db.get_tasks_by_job(task.job_id)
+        completed_count = sum(1 for t in all_tasks if t.status == TaskStatus.COMPLETED)
+        failed_count = sum(1 for t in all_tasks if t.status == TaskStatus.FAILED)
+
+        job.task_completed = completed_count
+        job.task_failed = failed_count
+        job.progress = (completed_count / job.task_total * 100) if job.task_total > 0 else 0
+
+        # 检查是否所有任务都完成
+        if completed_count + failed_count >= job.task_total:
+            if failed_count > 0:
+                job.status = JobStatus.FAILED
+            else:
+                job.status = JobStatus.COMPLETED
+            job.finished_at = datetime.now()
+
+            # Job 完成后清理 PNG (如果需要)
+            await _cleanup_png_if_needed(job)
+
+        db.update_job(job)
+        logger.info(f"Job {job.id} progress: {completed_count}/{job.task_total} tasks completed")
+
     return {"ok": True}
+
+
+async def _cleanup_png_if_needed(job: Job):
+    """Job完成后清理PNG序列 (如果不需要保留)"""
+    plugin_data = job.plugin_data
+    mode = plugin_data.get("mode", "")
+
+    # 只有 custom 模式需要清理
+    if mode != "custom":
+        return
+
+    # 检查输出格式 - 如果包含 png 则保留
+    output_formats = plugin_data.get("output_formats", [])
+    if isinstance(output_formats, str):
+        output_formats = [f.strip() for f in output_formats.split(",")]
+
+    # 如果用户选择了 PNG 输出，不删除
+    if "png" in [f.lower() for f in output_formats]:
+        logger.info(f"Job {job.id}: PNG output requested, keeping PNG files")
+        return
+
+    # 如果只有 PNG (没有其他编码格式)，也不删除
+    non_png_formats = [f for f in output_formats if f.lower() != "png"]
+    if not non_png_formats:
+        logger.info(f"Job {job.id}: Only PNG format, keeping PNG files")
+        return
+
+    # 删除 PNG 目录
+    output_path = plugin_data.get("output_path", "")
+    if output_path:
+        png_dir = Path(output_path) / "png"
+        if png_dir.exists() and png_dir.is_dir():
+            try:
+                shutil.rmtree(png_dir)
+                logger.info(f"Job {job.id}: Cleaned up PNG directory: {png_dir}")
+            except Exception as e:
+                logger.error(f"Job {job.id}: Failed to cleanup PNG: {e}")
 
 
 @app.post("/api/tasks/{task_id}/fail", tags=["Tasks"])
@@ -270,14 +379,14 @@ async def task_failed(task_id: str, exit_code: int = -1, error_message: str = No
     task = db.get_task(task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    
+
     db.update_task_status(
         task_id, TaskStatus.FAILED,
         finished_at=datetime.now(),
         exit_code=exit_code,
         error_message=error_message
     )
-    
+
     # 释放Worker
     if task.assigned_worker:
         worker = db.get_worker(task.assigned_worker)
@@ -285,7 +394,122 @@ async def task_failed(task_id: str, exit_code: int = -1, error_message: str = No
             worker.status = WorkerStatus.IDLE
             worker.current_task = None
             db.update_worker(worker)
-    
+
+    # 更新Job状态
+    job = db.get_job(task.job_id)
+    if job:
+        all_tasks = db.get_tasks_by_job(task.job_id)
+        completed_count = sum(1 for t in all_tasks if t.status == TaskStatus.COMPLETED)
+        failed_count = sum(1 for t in all_tasks if t.status == TaskStatus.FAILED)
+
+        job.task_completed = completed_count
+        job.task_failed = failed_count
+        job.progress = (completed_count / job.task_total * 100) if job.task_total > 0 else 0
+
+        # 检查是否所有任务都完成
+        if completed_count + failed_count >= job.task_total:
+            job.status = JobStatus.FAILED
+            job.finished_at = datetime.now()
+            job.error_message = error_message
+
+        db.update_job(job)
+        logger.info(f"Job {job.id} task failed: {completed_count}/{job.task_total} completed, {failed_count} failed")
+
+    return {"ok": True}
+
+
+@app.get("/api/tasks/{task_id}/log", tags=["Tasks"])
+async def get_task_log(task_id: str):
+    """获取Task日志"""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+
+    from pathlib import Path
+
+    # 首先尝试从data/logs目录读取 (Worker上传的日志)
+    log_path = Path("data/logs") / f"{task_id}.log"
+
+    # 如果不存在，尝试旧路径
+    if not log_path.exists():
+        log_path = Path("logs") / f"{task_id}.log"
+
+    if log_path.exists():
+        try:
+            content = log_path.read_text(encoding="utf-8")
+            return {"log": content, "task_id": task_id}
+        except Exception as e:
+            return {"log": f"Error reading log: {e}", "task_id": task_id}
+
+    return {"log": "Log not available yet. Waiting for worker to upload...", "task_id": task_id}
+
+
+@app.post("/api/tasks/{task_id}/retry", tags=["Tasks"])
+async def retry_task(task_id: str):
+    """重试失败的Task"""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+
+    if task.status != TaskStatus.FAILED:
+        raise HTTPException(400, "Can only retry failed tasks")
+
+    # 重置Task状态
+    db.update_task_status(task_id, TaskStatus.PENDING)
+    task.assigned_worker = None
+    task.started_at = None
+    task.finished_at = None
+    task.progress = 0
+    task.exit_code = None
+    task.error_message = None
+    db.update_task(task)
+
+    return {"ok": True}
+
+
+@app.post("/api/tasks/{task_id}/cancel", tags=["Tasks"])
+async def cancel_task(task_id: str):
+    """取消Task"""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+
+    if task.status not in (TaskStatus.PENDING, TaskStatus.ASSIGNED, TaskStatus.RUNNING):
+        raise HTTPException(400, "Cannot cancel task in current state")
+
+    # 释放Worker
+    if task.assigned_worker:
+        worker = db.get_worker(task.assigned_worker)
+        if worker:
+            worker.status = WorkerStatus.IDLE
+            worker.current_task = None
+            db.update_worker(worker)
+
+    db.update_task_status(task_id, TaskStatus.FAILED, error_message="Cancelled by user")
+
+    return {"ok": True}
+
+
+@app.post("/api/tasks/{task_id}/suspend", tags=["Tasks"])
+async def suspend_task(task_id: str):
+    """暂停Task (标记为失败，可重试)"""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+
+    if task.status != TaskStatus.RUNNING:
+        raise HTTPException(400, "Can only suspend running tasks")
+
+    # 释放Worker
+    if task.assigned_worker:
+        worker = db.get_worker(task.assigned_worker)
+        if worker:
+            worker.status = WorkerStatus.IDLE
+            worker.current_task = None
+            db.update_worker(worker)
+
+    db.update_task_status(task_id, TaskStatus.FAILED, error_message="Suspended by user")
+
     return {"ok": True}
 
 
@@ -294,7 +518,7 @@ async def task_failed(task_id: str, exit_code: int = -1, error_message: str = No
 @app.post("/api/workers/register", tags=["Workers"])
 async def register_worker(data: dict):
     """Worker注册"""
-    from core.models import Worker
+    from src.core.models import Worker
     
     worker = Worker(
         id=data["id"],
@@ -403,10 +627,59 @@ async def enable_worker(worker_id: str):
     worker = db.get_worker(worker_id)
     if not worker:
         raise HTTPException(404, "Worker not found")
-    
+
     worker.status = WorkerStatus.IDLE
     db.update_worker(worker)
     return {"status": "enabled"}
+
+
+@app.delete("/api/workers/{worker_id}", tags=["Workers"])
+async def delete_worker(worker_id: str):
+    """删除Worker"""
+    worker = db.get_worker(worker_id)
+    if not worker:
+        raise HTTPException(404, "Worker not found")
+
+    # 只能删除离线的Worker
+    if worker.status not in (WorkerStatus.OFFLINE, WorkerStatus.DISABLED):
+        raise HTTPException(400, "Can only delete offline or disabled workers")
+
+    db.delete_worker(worker_id)
+    return {"status": "deleted"}
+
+
+@app.get("/api/workers/{worker_id}/log", tags=["Workers"])
+async def get_worker_log(worker_id: str):
+    """获取Worker当前任务的日志"""
+    worker = db.get_worker(worker_id)
+    if not worker:
+        raise HTTPException(404, "Worker not found")
+
+    current_task = worker.current_task
+    log_content = ""
+
+    if current_task:
+        from pathlib import Path
+
+        # 首先尝试data/logs (Worker上传的日志)
+        log_path = Path("data/logs") / f"{current_task}.log"
+        if not log_path.exists():
+            log_path = Path("logs") / f"{current_task}.log"
+
+        if log_path.exists():
+            try:
+                log_content = log_path.read_text(encoding="utf-8")
+            except Exception as e:
+                log_content = f"Error reading log: {e}"
+        else:
+            log_content = "Waiting for log data..."
+
+    return {
+        "log": log_content,
+        "worker_id": worker_id,
+        "current_task": current_task,
+        "status": worker.status
+    }
 
 
 # ============ Plugins API ============
@@ -456,7 +729,7 @@ def main():
     """运行服务器"""
     import uvicorn
     uvicorn.run(
-        "server.main:app",
+        "src.server.main:app",
         host="0.0.0.0",
         port=8000,
         reload=False,

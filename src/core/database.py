@@ -82,6 +82,7 @@ class Database:
                     environment TEXT,
                     frame_start INTEGER,
                     frame_end INTEGER,
+                    metadata TEXT,
                     assigned_worker TEXT,
                     started_at TEXT,
                     finished_at TEXT,
@@ -258,9 +259,9 @@ class Database:
             self.conn.execute("""
                 INSERT INTO tasks (
                     id, job_id, idx, status, progress, command, working_dir,
-                    environment, frame_start, frame_end, assigned_worker,
+                    environment, frame_start, frame_end, metadata, assigned_worker,
                     started_at, finished_at, exit_code, error_message, log_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task.id, task.job_id, task.index,
                 task.status, task.progress,
@@ -268,6 +269,7 @@ class Database:
                 task.working_dir,
                 json.dumps(task.environment) if task.environment else None,
                 task.frame_start, task.frame_end,
+                json.dumps(task.metadata) if task.metadata else None,
                 task.assigned_worker,
                 task.started_at.isoformat() if task.started_at else None,
                 task.finished_at.isoformat() if task.finished_at else None,
@@ -369,6 +371,7 @@ class Database:
             environment=json.loads(row["environment"]) if row["environment"] else {},
             frame_start=row["frame_start"],
             frame_end=row["frame_end"],
+            metadata=json.loads(row["metadata"]) if row["metadata"] else {},
             assigned_worker=row["assigned_worker"],
             started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
             finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
@@ -463,6 +466,11 @@ class Database:
                 "UPDATE workers SET status = 'offline', current_task = NULL WHERE id = ?",
                 (worker_id,)
             )
+
+    def delete_worker(self, worker_id: str):
+        """删除Worker"""
+        with self.transaction():
+            self.conn.execute("DELETE FROM workers WHERE id = ?", (worker_id,))
     
     def _row_to_worker(self, row: sqlite3.Row) -> Worker:
         """Row转Worker对象"""

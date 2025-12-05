@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from plugins.base import RenderPlugin
+    from src.plugins.base import RenderPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +58,10 @@ class PluginRegistry:
     def load_builtin_plugins(self):
         """加载内置插件"""
         builtin_plugins = [
-            "plugins.aftereffects",
-            # "plugins.blender",
-            # "plugins.max",
-            # "plugins.ffmpeg",
+            "src.plugins.aftereffects",
+            "src.plugins.ffmpeg",
+            # "src.plugins.blender",
+            # "src.plugins.max",
         ]
         
         for module_name in builtin_plugins:
